@@ -1,0 +1,714 @@
+1.财务维度——离散化 
+# 文件路径
+EXCEL_FILE = r"D:\研究生\研一\师姐论文\科创板数据\财务维度完整数据.xlsx"
+
+# 读取Excel文件
+df = pd.read_excel(EXCEL_FILE, sheet_name="Sheet1")
+
+# 财务指标编号列表
+financial_indices = [
+    'X1', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10',
+    'X11', 'X12', 'X13', 'X14', 'X15', 'X16', 'X17', 'X18', 'X19',
+    'X20', 'X21', 'X22', 'X23', 'X24'
+]
+
+# 对每个财务指标进行离散化
+for idx in financial_indices:
+    if pd.api.types.is_numeric_dtype(df[idx]):
+        # 将数据分为5个等频区间
+        df[idx] = pd.qcut(df[idx], q=5, labels=False, duplicates='drop')
+
+# 保存结果到新的Excel文件
+output_path = r"D:\研究生\研一\师姐论文\科创板数据\财务维度完整数据散化.xlsx"
+df.to_excel(output_path, index=False)
+
+print(f"离散化后的数据集已保存到：{output_path}")
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+
+1.财务维度——计算iv值
+# 文件路径
+EXCEL_FILE = r"D:\研究生\研一\师姐论文\科创板数据\财务维度完整数据散化.xlsx"
+
+# 读取Excel文件
+df = pd.read_excel(EXCEL_FILE)
+
+# 计算每个特征的信息值（IV）
+def calculate_iv(df, feature, target):
+    # 创建一个 Crosstab 表格
+    crosstab = pd.crosstab(df[feature], df[target])
+    # 计算每组中的事件和非事件数量
+    crosstab = crosstab.rename(columns={0: 'non_event', 1: 'event'})
+    # 计算每组的分布
+    crosstab['total'] = crosstab['non_event'] + crosstab['event']
+    crosstab['non_event_dist'] = crosstab['non_event'] / crosstab['non_event'].sum()
+    crosstab['event_dist'] = crosstab['event'] / crosstab['event'].sum()
+    # 计算 WOE 和 IV
+    crosstab['WOE'] = np.log(crosstab['non_event_dist'] / crosstab['event_dist'])
+    crosstab['IV'] = (crosstab['non_event_dist'] - crosstab['event_dist']) * crosstab['WOE']
+    return crosstab['IV'].sum()
+
+# 财务指标列名（根据实际情况调整）
+financial_features = ['X1', 'X3', 'X4', 'X5', 'X6', 'X7', 'X8', 'X9', 'X10',
+                      'X11', 'X12', 'X13', 'X14', 'X15', 'X16', 'X17', 'X18', 'X19',
+                      'X20', 'X21', 'X22', 'X23', 'X24']
+
+TARGET = 'Y'
+
+# 计算每个财务指标的IV值
+iv_values = {}
+for feature in financial_features:
+    iv = calculate_iv(df, feature, TARGET)
+    iv_values[feature] = iv
+
+# 转换为 DataFrame，保留自然顺序
+iv_df = pd.DataFrame({
+    'Feature': [f.lower() for f in financial_features],  # x1, x2, ...
+    'IV': [iv_values[f] for f in financial_features]
+})
+# 设置中文字体
+matplotlib.rcParams['font.sans-serif'] = ['SimHei']  # 黑体
+matplotlib.rcParams['axes.unicode_minus'] = False    # 解决负号显示问题
+
+# 绘图
+plt.figure(figsize=(12, 8))
+bars = plt.bar(iv_df['Feature'], iv_df['IV'], color='skyblue')  # 按照定义顺序绘图
+plt.xlabel('特征编号', fontsize=12)
+plt.ylabel('IV值', fontsize=12)
+plt.title('指标信息值', fontsize=14)
+plt.grid(axis='y', linestyle='--', alpha=0.7)
+plt.tight_layout()
+
+# 添加 IV 值标签
+for bar in bars:
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width() / 2, height + 0.005, f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+plt.title('指标信息值', fontsize=14)
+
+# 保存图像
+plt.savefig(r"D:\研究生\研一\师姐论文\科创板数据\IV_Value_Plot.png", dpi=300)
+plt.show()
+1.财务维度——知识图谱绘制
+import pandas as pd
+import numpy as np
+import networkx as nx
+from sklearn.metrics import mutual_info_score
+from pgmpy.models import BayesianNetwork
+import matplotlib.pyplot as plt
+
+# ———————— 配置 ————————
+# 原始特征为 X1–X24，显式跳过 X2
+ALL_FEATURES = [f'X{i}' for i in range(1,25) if i != 2]
+TARGET = 'Y'
+EXCEL_FILE = r"D:\研究生\研一\师姐论文\科创板数据\财务维度完整数据散化.xlsx"
+
+# ———————— 1. 读数据 & 预处理 ————————
+df = pd.read_excel(EXCEL_FILE)
+df = df.dropna(subset=ALL_FEATURES + [TARGET])
+for col in ALL_FEATURES + [TARGET]:
+    df[col] = pd.Categorical(df[col])
+
+# ———————— 2. 计算 IV 并筛选 [0.1, 0.5) ————————
+def calculate_iv(col, y):
+    tbl = pd.crosstab(col, y)
+    if set(tbl.columns) != {0,1}: 
+        return 0.0
+    tbl = tbl.rename(columns={0:'non',1:'evt'})
+    tbl['nd'] = tbl['non']/tbl['non'].sum()
+    tbl['ed'] = tbl['evt']/tbl['evt'].sum()
+    mask = (tbl['nd']>0)&(tbl['ed']>0)
+    woe = np.log(tbl.loc[mask,'nd']/tbl.loc[mask,'ed'])
+    iv  = ((tbl.loc[mask,'nd']-tbl.loc[mask,'ed'])*woe).sum()
+    return iv
+
+iv = {f: calculate_iv(df[f], df[TARGET].cat.codes) for f in ALL_FEATURES}
+iv_series = pd.Series(iv).sort_values(ascending=False)
+selected = iv_series[(iv_series >= 0.1) & (iv_series < 0.5)].index.tolist()
+if not selected:
+    raise ValueError("无 IV 落在 [0.1,0.5) 的特征")
+print("IV 筛选后特征：", selected)
+
+# ———————— 3. 分层 ————————
+mid = len(selected) // 2
+layer2 = selected[:mid]   # IV 较高的半数，作为中间层
+layer1 = selected[mid:]   # IV 较低的半数，作为底层
+print("底层 Layer1:", layer1)
+print("中间层 Layer2:", layer2)
+
+# ———————— 4. 构建三层有向网络 ————————
+bn = BayesianNetwork()
+bn.add_nodes_from(layer1 + layer2 + [TARGET])
+
+# 底层→中间层：每个 layer1 特征指向与之互信息最大的 layer2 特征
+for f1 in layer1:
+    best, best_mi = None, -1
+    for f2 in layer2:
+        mi = mutual_info_score(df[f1], df[f2])
+        if mi > best_mi:
+            best_mi, best = mi, f2
+    bn.add_edge(f1, best)
+
+# 中间层→Y
+for f2 in layer2:
+    bn.add_edge(f2, TARGET)
+
+# 验证 DAG 无环
+assert nx.is_directed_acyclic_graph(bn), "网络有环！"
+print("三层有向边：", list(bn.edges()))
+
+# ———————— 5. 可视化 ————————
+pos = {
+    **{n:(i,0)    for i,n in enumerate(layer1)},
+    **{n:(i,1)    for i,n in enumerate(layer2)},
+    **{TARGET:(len(layer2)//2,2)}
+}
+plt.figure(figsize=(8,6))
+nx.draw(bn, pos, with_labels=True, node_size=1500,
+        node_color='lightblue', arrowsize=20)
+plt.title("三层贝叶斯网络（排除 X2）")
+plt.axis('off')
+plt.show()
+
+
+
+
+基线模型 和  知识图谱贝叶斯
+# 加载数据
+logger.info("加载数据")
+data = pd.read_excel(INPUT_PATH, index_col=0)
+data.reset_index(inplace=True)
+data.rename(columns={'index': STOCK_COL}, inplace=True)
+
+req = set(FEATURES + [TARGET, FY_COL, STOCK_COL])
+if not req.issubset(data.columns):
+    raise KeyError(f"缺少必要列: {req - set(data.columns)}")
+logger.info(f"数据形状：{data.shape}")
+
+# 划分训练集和测试集
+logger.info("划分训练集和测试集")
+X = data[FEATURES]
+y = data[TARGET]
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
+
+# 特征层级划分
+layer1 = ['X13', 'X7', 'X19', 'X10']  # 底层特征
+layer2 = ['X17', 'X12', 'X9', 'X4']   # 中间层特征
+target_layer = [TARGET]               # 目标层
+
+# 构建层级结构的贝叶斯网络
+logger.info("构建层级结构的贝叶斯网络")
+bn_model = BayesianNetwork()
+
+# 添加节点
+bn_model.add_nodes_from(layer1 + layer2 + target_layer)
+
+# 添加边（从底层到中间层，中间层到目标层）
+edges = []
+edges.extend([('X13', 'X17'), ('X7', 'X12'), ('X19', 'X9'), ('X10', 'X4')])
+edges.extend([('X17', 'Y'), ('X12', 'Y'), ('X9', 'Y'), ('X4', 'Y')])
+
+# 确保没有环
+bn_model.add_edges_from(edges)
+if not nx.is_directed_acyclic_graph(bn_model):
+    raise ValueError("贝叶斯网络结构有环！")
+
+# 参数学习
+logger.info("开始参数学习")
+bn_model.fit(
+    pd.concat([X_train, y_train], axis=1),
+    estimator=BayesianEstimator,
+    prior_type='BDeu',
+    equivalent_sample_size=50  # 增大等效样本大小
+)
+
+# 输出特征之间的关系
+logger.info("特征之间的关系：")
+for edge in bn_model.edges():
+    logger.info(f"{edge[0]} -> {edge[1]}")
+
+# 逻辑回归模型
+logger.info("训练逻辑回归模型")
+from sklearn.linear_model import LogisticRegression
+lr_model = LogisticRegression(penalty='l2', solver='liblinear', random_state=42)
+lr_model.fit(X_train, y_train)
+
+# 集成模型打分
+logger.info("集成模型打分")
+records = []
+bn_preds = []
+lr_preds = []
+ensemble_preds = []
+actuals = []
+
+infer = VariableElimination(bn_model)
+
+for _, row in data.iterrows():
+    evidence = row[FEATURES].to_dict()
+    bn_result = infer.query([TARGET], evidence=evidence)
+    bn_prob = bn_result.values[1] if len(bn_result.values) > 1 else 0.5
+    bn_pred = 1 if bn_prob >= 0.5 else 0
+
+    lr_prob = lr_model.predict_proba(row[FEATURES].values.reshape(1, -1))[0, 1]
+    lr_pred = 1 if lr_prob >= 0.5 else 0
+
+    ensemble_prob = (bn_prob + lr_prob) / 2
+    ensemble_pred = 1 if ensemble_prob >= 0.5 else 0
+
+    records.append({
+        STOCK_COL: row[STOCK_COL],
+        FY_COL: row[FY_COL],
+        'bn_risk_score': bn_prob,
+        'lr_risk_score': lr_prob,
+        'ensemble_risk_score': ensemble_prob,
+        'actual': row[TARGET]
+    })
+
+    bn_preds.append(bn_pred)
+    lr_preds.append(lr_pred)
+    ensemble_preds.append(ensemble_pred)
+    actuals.append(row[TARGET])
+
+# 计算整体准确率
+bn_accuracy = accuracy_score(actuals, bn_preds)
+lr_accuracy = accuracy_score(actuals, lr_preds)
+ensemble_accuracy = accuracy_score(actuals, ensemble_preds)
+
+# 计算召回值和F1值
+bn_recall = recall_score(actuals, bn_preds)
+lr_recall = recall_score(actuals, lr_preds)
+ensemble_recall = recall_score(actuals, ensemble_preds)
+
+bn_f1 = f1_score(actuals, bn_preds)
+lr_f1 = f1_score(actuals, lr_preds)
+ensemble_f1 = f1_score(actuals, ensemble_preds)
+
+# 输出结果
+logger.info(f"贝叶斯网络整体准确率: {bn_accuracy:.4f}, 召回值: {bn_recall:.4f}, F1值: {bn_f1:.4f}")
+logger.info(f"逻辑回归整体准确率: {lr_accuracy:.4f}, 召回值: {lr_recall:.4f}, F1值: {lr_f1:.4f}")
+logger.info(f"集成模型整体准确率: {ensemble_accuracy:.4f}, 召回值: {ensemble_recall:.4f}, F1值: {ensemble_f1:.4f}")
+
+# 保存结果
+logger.info("保存结果")
+os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+result_df = pd.DataFrame(records)
+result_df.to_excel(OUTPUT_PATH, index=False)
+logger.info(f"结果已保存到 {OUTPUT_PATH}")
+
+# 输出所有舞弊概率
+logger.info("输出所有舞弊概率")
+print("\n所有企业的舞弊概率：")
+print(result_df[[STOCK_COL, FY_COL, 'bn_risk_score', 'lr_risk_score', 'ensemble_risk_score', 'actual']])
+
+# 6. 多个基线模型
+models = {
+    '逻辑回归': LogisticRegression(penalty='l2', solver='liblinear', random_state=42),
+    '支持向量机': SVC(probability=True, random_state=42),
+    '随机森林': RandomForestClassifier(random_state=42),
+    '梯度提升树': GradientBoostingClassifier(random_state=42),
+}
+
+# 训练基线模型并评估
+results = {}
+for name, model in models.items():
+    logger.info(f"训练{ name }模型")
+    model.fit(X_train, y_train)
+    
+    # 预测
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    
+    # 评估指标
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred)
+    rec = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    
+    results[name] = {
+        '模型': model,
+        '准确率': acc,
+        '精确率': prec,
+        '召回率': rec,
+        'F1分数': f1,
+        '预测概率': y_prob
+    }
+    logger.info(f"{name}模型评估指标: 准确率={acc:.4f}, 精确率={prec:.4f}, 召回率={rec:.4f}, F1分数={f1:.4f}")
+
+# 7. 集成模型打分
+logger.info("集成模型打分")
+records = []
+bn_preds = []
+ensemble_preds = []
+actuals = []
+
+infer = VariableElimination(bn_model)
+
+# 对所有数据进行推理
+for _, row in data.iterrows():
+    # 贝叶斯网络推理
+    evidence = row[FEATURES].to_dict()
+    bn_result = infer.query([TARGET], evidence=evidence)
+    bn_prob = bn_result.values[1] if len(bn_result.values) > 1 else 0.5
+    bn_pred = 1 if bn_prob >= 0.5 else 0
+
+    # 集成模型分数
+    ensemble_prob = bn_prob
+    for name in models:
+        model = results[name]['模型']
+        prob = model.predict_proba(row[FEATURES].values.reshape(1, -1))[0, 1]
+        ensemble_prob += prob
+    ensemble_prob /= (len(models) + 1)  # 平均
+    ensemble_pred = 1 if ensemble_prob >= 0.5 else 0
+
+    records.append({
+        STOCK_COL: row[STOCK_COL],
+        FY_COL: row[FY_COL],
+        'bn_risk_score': bn_prob,
+        **{f'{name}_risk_score': results[name]['模型'].predict_proba(row[FEATURES].values.reshape(1, -1))[0, 1] for name in models},
+        'ensemble_risk_score': ensemble_prob,
+        'actual': row[TARGET]
+    })
+
+    bn_preds.append(bn_pred)
+    ensemble_preds.append(ensemble_pred)
+    actuals.append(row[TARGET])
+
+# 计算贝叶斯网络的评估指标
+bn_acc = accuracy_score(actuals, bn_preds)
+bn_prec = precision_score(actuals, bn_preds)
+bn_rec = recall_score(actuals, bn_preds)
+bn_f1 = f1_score(actuals, bn_preds)
+logger.info(f"贝叶斯网络评估指标: 准确率={bn_acc:.4f}, 精确率={bn_prec:.4f}, 召回率={bn_rec:.4f}, F1分数={bn_f1:.4f}")
+
+# 计算集成模型的评估指标
+ensemble_acc = accuracy_score(actuals, ensemble_preds)
+ensemble_prec = precision_score(actuals, ensemble_preds)
+ensemble_rec = recall_score(actuals, ensemble_preds)
+ensemble_f1 = f1_score(actuals, ensemble_preds)
+logger.info(f"集成模型评估指标: 准确率={ensemble_acc:.4f}, 精确率={ensemble_prec:.4f}, 召回率={ensemble_rec:.4f}, F1分数={ensemble_f1:.4f}")
+
+# 8. 保存结果
+logger.info("保存结果")
+os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
+result_df = pd.DataFrame(records)
+result_df.to_excel(OUTPUT_PATH, index=False)
+logger.info(f"结果已保存到 {OUTPUT_PATH}")
+
+# 9. 输出所有舞弊概率
+logger.info("输出所有舞弊概率")
+print("\n所有企业的舞弊概率：")
+print(result_df[[STOCK_COL, FY_COL, 'bn_risk_score', *[f'{name}_risk_score' for name in models], 'ensemble_risk_score', 'actual']])
+
+
+
+2 前景部分
+import pandas as pd
+import tushare as ts
+from tqdm import tqdm
+
+# 设置 Tushare token
+ts.set_token('753190180e50a6dc68a71821da2d475c0ab700a5c50cb10268468843')
+pro = ts.pro_api()
+
+# 读取 Excel 文件中的股票代码和会计年度
+excel_path = r'D:\研究生\研一\师姐论文\科创板数据\前景数据.xlsx'
+df = pd.read_excel(excel_path, engine="openpyxl")
+
+# 获取年度平均价
+def get_annual_avg_price(ts_code, year):
+    try:
+        # 获取当年的交易数据
+        start_date = f"{year}0101"
+        end_date = f"{year}1231"
+        daily_data = pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        
+        if not daily_data.empty:
+            # 计算年度平均收盘价
+            avg_price = daily_data['close'].mean()
+            return avg_price
+        else:
+            return None
+    except Exception as e:
+        print(f"获取{ts_code} {year}年度平均价时出错：{e}")
+        return None
+
+# 应用函数并保存结果
+annual_avg_prices = []
+for _, row in tqdm(df.iterrows(), desc="处理进度"):
+    ts_code = row['ts_code']
+    year = row['会计年度']
+    avg_price = get_annual_avg_price(ts_code, year)
+    annual_avg_prices.append(avg_price)
+
+df['年度平均价'] = annual_avg_prices
+
+# 将结果保存回 Excel 文件
+df.to_excel(excel_path, index=False)
+
+print(f"年度平均价数据已追加到：{excel_path}")
+
+3综合评分代码
+
+import pandas as pd
+import numpy as np
+import networkx as nx
+from pgmpy.models import BayesianNetwork
+from pgmpy.estimators import BayesianEstimator
+from pgmpy.inference import VariableElimination
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, recall_score, f1_score
+import logging
+
+# 设置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 定义文件路径和列名
+INPUT_PATH_FINANCIAL = "财务维度完整数据.xlsx"
+INPUT_PATH_ACCOUNTING = "会计总表.xlsx"
+INPUT_PATH_STRATEGIC = "战略维度指标.xlsx"
+INPUT_PATH_PROSPECT = "前景分析结果.xlsx"
+STOCK_COL = "ts_code"
+FY_COL = "年度"
+TARGET = "Y"
+
+# 特征列
+FEATURES_FINANCIAL = ['X13', 'X7', 'X19', 'X10', 'X17', 'X12', 'X9', 'X4']
+FEATURES_ACCOUNTING = ['审计意见类型', '存货量化', '固定资产折旧法量化', '会计政策改变量化']
+FEATURES_STRATEGIC = ['无形资产比率', '政府补助', '环境有益的产品', '环境认证', 'CSR报告全面性', '员工参股', '质量体系', '专利数目', '研发支出', '研发人员比例', '技术人员比例', '反腐败措施', '战略共享', '诚信经营理念', '研发人员数量占比', '研发支出占营业收入比例']
+FEATURES_PROSPECT = ['PE1', 'PE2', 'PETTM', 'PS1', 'PS2', 'PSTTM', 'PCF1', 'PCF2', 'PCFTTM', 'PB', 'EPS1', '每股收益TTM1', '每股收益2', '每股收益TTM2', '每股收益3', '每股收益TTM3', '每股收益4', '每股收益TTM4', '每股综合收益1', '每股综合收益TTM1', '每股综合收益2', '每股综合收益TTM2', '每股营业总收入1', '每股营业总收入TTM1', '每股营业收入1', 'REVPS1', 'BVPS1', '每股经营活动产生的现金流量净额1', 'CFPS1', '昨日收盘价', 'annual_price', 'PE_ind', 'PS_ind', 'PCF_ind', 'IV_PE', 'IV_PS', 'IV_PCF', 'IV_DCF', 'IV_mean', 'diff', 'diff_clip']
+
+# 加载数据
+logger.info("加载数据")
+data_financial = pd.read_excel(INPUT_PATH_FINANCIAL, index_col=0)
+data_financial.reset_index(inplace=True)
+data_financial.rename(columns={'index': STOCK_COL}, inplace=True)
+
+data_accounting = pd.read_excel(INPUT_PATH_ACCOUNTING, index_col=0)
+data_accounting.reset_index(inplace=True)
+data_accounting.rename(columns={'index': STOCK_COL}, inplace=True)
+
+data_strategic = pd.read_excel(INPUT_PATH_STRATEGIC, index_col=0)
+data_strategic.reset_index(inplace=True)
+data_strategic.rename(columns={'index': STOCK_COL}, inplace=True)
+
+data_prospect = pd.read_excel(INPUT_PATH_PROSPECT, index_col=0)
+data_prospect.reset_index(inplace=True)
+data_prospect.rename(columns={'index': STOCK_COL}, inplace=True)
+
+# 合并数据
+data = pd.merge(data_financial, data_accounting, on=[STOCK_COL, FY_COL], how='inner')
+data = pd.merge(data, data_strategic, on=[STOCK_COL, FY_COL], how='inner')
+data = pd.merge(data, data_prospect, on=[STOCK_COL, FY_COL], how='inner')
+
+# 检查是否包含所有必要列
+req = set(FEATURES_FINANCIAL + FEATURES_ACCOUNTING + FEATURES_STRATEGIC + FEATURES_PROSPECT + [TARGET, FY_COL, STOCK_COL])
+if not req.issubset(data.columns):
+    raise KeyError(f"缺少必要列: {req - set(data.columns)}")
+logger.info(f"数据形状：{data.shape}")
+
+# 划分训练集和测试集
+logger.info("划分训练集和测试集")
+X = data[FEATURES_FINANCIAL + FEATURES_ACCOUNTING + FEATURES_STRATEGIC + FEATURES_PROSPECT]
+y = data[TARGET]
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
+
+# 构建财务维度贝叶斯网络
+logger.info("构建财务维度贝叶斯网络")
+bn_model_financial = BayesianNetwork()
+
+# 添加节点
+layer1_financial = ['X13', 'X7', 'X19', 'X10']  # 底层特征
+layer2_financial = ['X17', 'X12', 'X9', 'X4']   # 中间层特征
+edges_financial = []
+edges_financial.extend([('X13', 'X17'), ('X7', 'X12'), ('X19', 'X9'), ('X10', 'X4')])
+
+bn_model_financial.add_edges_from(edges_financial)
+
+# 参数学习
+logger.info("开始财务维度参数学习")
+bn_model_financial.fit(
+    pd.concat([X_train[FEATURES_FINANCIAL], y_train], axis=1),
+    estimator=BayesianEstimator,
+    prior_type='BDeu',
+    equivalent_sample_size=50  # 增大等效样本大小
+)
+
+# 构建会计维度贝叶斯网络
+logger.info("构建会计维度贝叶斯网络")
+bn_model_accounting = BayesianNetwork()
+
+# 添加节点和边（根据数据特征构建层级结构）
+edges_accounting = []
+# 假设部分会计特征之间存在依赖关系
+edges_accounting.extend([('审计意见类型', '会计政策改变量化'), ('存货量化', '固定资产折旧法量化')])
+bn_model_accounting.add_edges_from(edges_accounting)
+
+# 参数学习
+logger.info("开始会计维度参数学习")
+bn_model_accounting.fit(
+    X_train[FEATURES_ACCOUNTING],
+    estimator=BayesianEstimator,
+    prior_type='BDeu',
+    equivalent_sample_size=50
+)
+
+# 构建战略维度贝叶斯网络
+logger.info("构建战略维度贝叶斯网络")
+bn_model_strategic = BayesianNetwork()
+
+# 添加节点和边（根据数据特征构建层级结构）
+edges_strategic = []
+# 假设部分战略特征之间存在依赖关系
+edges_strategic.extend([('无形资产比率', '专利数目'), ('研发支出', '研发人员比例'), ('环境认证', '环境有益的产品')])
+bn_model_strategic.add_edges_from(edges_strategic)
+
+# 参数学习
+logger.info("开始战略维度参数学习")
+bn_model_strategic.fit(
+    X_train[FEATURES_STRATEGIC],
+    estimator=BayesianEstimator,
+    prior_type='BDeu',
+    equivalent_sample_size=50
+)
+
+# 构建前景维度贝叶斯网络
+logger.info("构建前景维度贝叶斯网络")
+bn_model_prospect = BayesianNetwork()
+
+# 添加节点和边（根据数据特征构建层级结构）
+edges_prospect = []
+# 假设部分前景特征之间存在依赖关系
+edges_prospect.extend([('PE1', 'PETTM'), ('PS1', 'PSTTM'), ('PCF1', 'PCFTTM')])
+bn_model_prospect.add_edges_from(edges_prospect)
+
+# 参数学习
+logger.info("开始前景维度参数学习")
+bn_model_prospect.fit(
+    X_train[FEATURES_PROSPECT],
+    estimator=BayesianEstimator,
+    prior_type='BDeu',
+    equivalent_sample_size=50
+)
+
+# 贝叶斯模型打分
+logger.info("贝叶斯模型打分")
+records = []
+bn_preds = []
+actuals = []
+
+infer_financial = VariableElimination(bn_model_financial)
+infer_accounting = VariableElimination(bn_model_accounting)
+infer_strategic = VariableElimination(bn_model_strategic)
+infer_prospect = VariableElimination(bn_model_prospect)
+
+for _, row in data.iterrows():
+    # 获取财务维度证据
+    evidence_financial = row[FEATURES_FINANCIAL].to_dict()
+    bn_result_financial = infer_financial.query([TARGET], evidence=evidence_financial)
+    bn_prob_financial = bn_result_financial.values[1] if len(bn_result_financial.values) > 1 else 0.5
+
+    # 获取会计维度证据
+    evidence_accounting = row[FEATURES_ACCOUNTING].to_dict()
+    bn_result_accounting = infer_accounting.query(variables=[FEATURES_ACCOUNTING[-1]], evidence=evidence_accounting)
+    bn_prob_accounting = bn_result_accounting.values[1] if len(bn_result_accounting.values) > 1 else 0.5
+
+    # 获取战略维度证据
+    evidence_strategic = row[FEATURES_STRATEGIC].to_dict()
+    bn_result_strategic = infer_strategic.query(variables=[FEATURES_STRATEGIC[-1]], evidence=evidence_strategic)
+    bn_prob_strategic = bn_result_strategic.values[1] if len(bn_result_strategic.values) > 1 else 0.5
+
+    # 获取前景维度证据
+    evidence_prospect = row[FEATURES_PROSPECT].to_dict()
+    bn_result_prospect = infer_prospect.query(variables=[FEATURES_PROSPECT[-1]], evidence=evidence_prospect)
+    bn_prob_prospect = bn_result_prospect.values[1] if len(bn_result_prospect.values) > 1 else 0.5
+
+    # 综合贝叶斯网络预测概率
+    bn_prob_combined = (bn_prob_financial + bn_prob_accounting + bn_prob_strategic + bn_prob_prospect) / 4
+    bn_pred = 1 if bn_prob_combined >= 0.5 else 0
+
+    records.append({
+        STOCK_COL: row[STOCK_COL],
+        FY_COL: row[FY_COL],
+        'bn_risk_score': bn_prob_combined,
+        'actual': row[TARGET]
+    })
+
+    bn_preds.append(bn_pred)
+    actuals.append(row[TARGET])
+
+# 计算整体准确率
+bn_accuracy = accuracy_score(actuals, bn_preds)
+
+# 计算召回值和F1值
+bn_recall = recall_score(actuals, bn_preds)
+bn_f1 = f1_score(actuals, bn_preds)
+
+# 输出贝叶斯模型结果
+logger.info(f"贝叶斯模型准确率: {bn_accuracy}")
+logger.info(f"贝叶斯模型召回率: {bn_recall}")
+logger.info(f"贝叶斯模型F1值: {bn_f1}")
+
+# 层次分析法（AHP）
+judgment_matrix = np.array([
+    [1, 3, 5, 7],
+    [1/3, 1, 3, 5],
+    [1/5, 1/3, 1, 3],
+    [1/7, 1/5, 1/3, 1]
+])
+
+eigenvalues, eigenvectors = np.linalg.eig(judgment_matrix)
+max_eigenvalue = np.max(eigenvalues)
+weights_ahp = eigenvectors[:, np.argmax(eigenvalues)] / np.sum(eigenvectors[:, np.argmax(eigenvalues)])
+
+CI = (max_eigenvalue - len(judgment_matrix)) / (len(judgment_matrix) - 1)
+RI = [0, 0, 0.58, 0.90, 1.12, 1.24, 1.32, 1.41, 1.45, 1.49]
+CR = CI / RI[len(judgment_matrix)-1]
+
+print("判断矩阵具有一致性，权重分配有效。" if CR < 0.1 else "判断矩阵不具有一致性，需要重新调整判断矩阵。")
+print("基于AHP的权重为：", weights_ahp)
+# 使用优化后的权重计算综合评分
+merged_df['composite_score'] = (
+    merged_df['财务评分'] * optimized_weights[0] +
+    merged_df['会计评分'] * optimized_weights[1] +
+    merged_df['战略评分'] * optimized_weights[2] +
+    merged_df['市场评分'] * optimized_weights[3]
+)
+
+# 根据综合评分将风险等级分为三等分
+merged_df['risk_level'] = pd.qcut(merged_df['composite_score'], 3, labels=['低风险', '中风险', '高风险'])
+
+# 将风险等级映射为数值以便计算指标
+merged_df['risk_level_numeric'] = merged_df['risk_level'].map({'低风险': 0, '中风险': 1, '高风险': 2})
+
+# 检查映射后的数值列是否存在NaN
+print("映射后的风险等级数值列是否存在NaN:", merged_df['risk_level_numeric'].isnull().values.any())
+
+# 计算分类指标
+accuracy = accuracy_score(y, merged_df['risk_level_numeric'])
+recall = recall_score(y, merged_df['risk_level_numeric'], average='weighted')
+f1 = f1_score(y, merged_df['risk_level_numeric'], average='weighted')
+
+print(f"Accuracy: {accuracy}")
+print(f"Recall: {recall}")
+print(f"F1 Score: {f1}")
+
+# 如果没有真实标签，可以仅使用AHP权重计算综合评分
+merged_df['composite_score_ahp'] = (
+    merged_df['财务评分'] * weights_ahp[0] +
+    merged_df['会计评分'] * weights_ahp[1] +
+    merged_df['战略评分'] * weights_ahp[2] +
+    merged_df['市场评分'] * weights_ahp[3]
+)
+
+# 根据综合评分将风险等级分为三等分（基于AHP）
+merged_df['risk_level_ahp'] = pd.qcut(merged_df['composite_score_ahp'], 3, labels=['低风险', '中风险', '高风险'])
+
+# 输出综合评分和风险等级
+print(merged_df[['财务评分', '会计评分', '战略评分', '市场评分', 'composite_score_ahp', 'risk_level_ahp']].head())
+
+# 保存结果
+output_path = r"D:\研究生\研一\李曼论文\科创板数据\最终综合评分.xlsx"
+merged_df.to_excel(output_path, index=False)
+
